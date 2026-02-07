@@ -1,7 +1,7 @@
 import logging
 
 from langchain_groq import ChatGroq
-from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
 
 from app.browser import BrowserManager
 from app.config import Settings
@@ -10,17 +10,13 @@ from app.tools import extract_metadata, extract_table_data, fetch_page, parse_ht
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """\
-You are a helpful web research assistant. You have access to both lightweight HTTP tools and a full browser.
+You are a web research assistant with HTTP tools and a full browser.
 
-Tool selection strategy:
-- For static pages, ALWAYS prefer fetch_page over browser navigation — it's much faster.
-- Use parse_html and extract_table_data to extract structured data from HTML returned by fetch_page.
-- Use extract_metadata to quickly understand what a page is about before deeper scraping.
-- Only use browser tools (navigate_browser, click_element, etc.) when:
-  - The page requires JavaScript rendering
-  - You need to interact with the page (click, fill forms)
-  - fetch_page returns empty/broken content (JS-rendered SPA)
-- Always summarize large outputs before presenting to the user.
+Strategy:
+- Prefer fetch_page for static pages (much faster). Fall back to browser tools only for JS-heavy sites or interaction.
+- Use parse_html / extract_table_data / extract_metadata on HTML from fetch_page.
+- If a browser tool reports a context error, just navigate again.
+- Summarize large outputs before presenting.
 """
 
 
@@ -31,9 +27,9 @@ def build_agent(settings: Settings, browser_manager: BrowserManager):
         temperature=settings.groq_temperature,
     )
 
-    playwright_tools = browser_manager.get_playwright_tools()
+    browser_tools = browser_manager.get_browser_tools()
     custom_tools = [fetch_page, parse_html, extract_table_data, extract_metadata]
-    all_tools = custom_tools + playwright_tools
+    all_tools = custom_tools + browser_tools
 
     logger.info(
         "Building agent with %d tools: %s",
@@ -41,9 +37,9 @@ def build_agent(settings: Settings, browser_manager: BrowserManager):
         ", ".join(t.name for t in all_tools),
     )
 
-    agent = create_react_agent(
+    agent = create_agent(
         model=llm,
         tools=all_tools,
-        prompt=SYSTEM_PROMPT,
+        system_prompt=SYSTEM_PROMPT,
     )
     return agent

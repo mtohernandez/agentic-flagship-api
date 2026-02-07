@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     agent_request_timeout: int = 300
 
     browser_headless: bool = True
+    browser_nav_timeout: int = 60000
+    browser_action_timeout: int = 10000
 
     cors_origins: str = "*"
 

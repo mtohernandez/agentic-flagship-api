@@ -22,7 +22,11 @@ async def lifespan(app: FastAPI):
     setup_logging(settings.debug)
     logger.info("Settings loaded")
 
-    browser_manager = BrowserManager(headless=settings.browser_headless)
+    browser_manager = BrowserManager(
+        headless=settings.browser_headless,
+        nav_timeout=settings.browser_nav_timeout,
+        action_timeout=settings.browser_action_timeout,
+    )
     await browser_manager.start()
 
     agent = build_agent(settings, browser_manager)

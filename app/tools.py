@@ -15,14 +15,14 @@ http_client = httpx.AsyncClient(
     headers={"User-Agent": "Mozilla/5.0 (compatible; ScrapingAgent/1.0)"},
 )
 
-_FETCH_MAX_CHARS = 50_000
-_PARSE_MAX_CHARS = 20_000
+_FETCH_MAX_CHARS = 20_000
+_PARSE_MAX_CHARS = 10_000
 _PARSE_MAX_ELEMENTS = 50
 
 
 @tool
 async def fetch_page(url: str) -> str:
-    """Fetch a web page via HTTP and return raw HTML. Fast for static pages (~100x faster than browser navigation). Use this first; fall back to browser tools for JS-heavy sites."""
+    """Fetch raw HTML via HTTP. Fast. Use first; fall back to browser tools for JS-heavy sites."""
     ssrf_error = validate_url(url)
     if ssrf_error:
         return ssrf_error
@@ -41,7 +41,7 @@ async def fetch_page(url: str) -> str:
 
 @tool
 async def parse_html(html: str, selector: str, extract: str = "text") -> str:
-    """Parse HTML with a CSS selector. extract can be 'text' (visible text), 'html' (inner HTML), or 'attrs' (element attributes). Returns up to 50 matching elements."""
+    """Parse HTML with a CSS selector. extract: 'text', 'html', or 'attrs'."""
     soup = BeautifulSoup(html, "lxml")
     elements = soup.select(selector, limit=_PARSE_MAX_ELEMENTS)
 
@@ -65,7 +65,7 @@ async def parse_html(html: str, selector: str, extract: str = "text") -> str:
 
 @tool
 async def extract_table_data(html: str, table_index: int = 0) -> str:
-    """Extract a <table> from HTML into markdown format with headers and rows. Use table_index to pick which table (0-based)."""
+    """Extract a table from HTML into markdown. table_index is 0-based."""
     soup = BeautifulSoup(html, "lxml")
     tables = soup.find_all("table")
 
@@ -95,7 +95,7 @@ async def extract_table_data(html: str, table_index: int = 0) -> str:
 
 @tool
 async def extract_metadata(html: str) -> str:
-    """Extract page metadata: title, description, Open Graph tags, canonical URL, and counts of links/images/tables. Returns JSON."""
+    """Extract page metadata (title, description, OG tags, link/image/table counts) as JSON."""
     soup = BeautifulSoup(html, "lxml")
 
     title_tag = soup.find("title")
