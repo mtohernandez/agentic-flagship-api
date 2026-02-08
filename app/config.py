@@ -9,9 +9,13 @@ class Settings(BaseSettings):
     groq_model: str = "llama-3.3-70b-versatile"
     groq_temperature: float = 0.0
 
-    agent_recursion_limit: int = 40
-    agent_request_timeout: int = 300
+    agent_recursion_limit: int = 15
+    agent_request_timeout: int = 120
+    agent_max_retries: int = 2
 
+    groq_max_tokens: int = 2048
+
+    browser_enabled: bool = True
     browser_headless: bool = True
     browser_nav_timeout: int = 60000
     browser_action_timeout: int = 10000

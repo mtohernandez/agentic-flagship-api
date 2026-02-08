@@ -4,6 +4,7 @@ import logging
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
+from groq import APIError as GroqAPIError, RateLimitError as GroqRateLimitError
 from langgraph.errors import GraphRecursionError
 
 from app.security import verify_api_key
@@ -56,6 +57,20 @@ async def run_mission(
         except TimeoutError:
             logger.warning("Timeout after %ds: %s", timeout, truncated)
             yield _sse("error", f"Request timed out after {timeout} seconds.")
+        except GroqRateLimitError as exc:
+            logger.warning("Groq rate limit hit: %s | prompt: %s", exc.message, truncated)
+            yield _sse("error", "rate_limit")
+        except GroqAPIError as exc:
+            failed = None
+            if isinstance(exc.body, dict):
+                failed = exc.body.get("failed_generation")
+            logger.error(
+                "Groq API error (after retries exhausted): %s | failed_generation: %s | prompt: %s",
+                exc.message,
+                failed,
+                truncated,
+            )
+            yield _sse("error", "The AI model produced an invalid response. Please try again or rephrase your prompt.")
         except Exception:
             logger.exception("Stream error: %s", truncated)
             yield _sse("error", "An internal error occurred.")

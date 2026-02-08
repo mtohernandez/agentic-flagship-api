@@ -11,7 +11,7 @@ from app.config import Settings
 from app.logging import setup_logging
 from app.routes import router
 from app.security import RateLimitMiddleware
-from app.tools import http_client
+from app.tools import cache_clear, http_client
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,10 @@ async def lifespan(app: FastAPI):
         nav_timeout=settings.browser_nav_timeout,
         action_timeout=settings.browser_action_timeout,
     )
-    await browser_manager.start()
+    if settings.browser_enabled:
+        await browser_manager.start()
+    else:
+        logger.info("Browser disabled via BROWSER_ENABLED=false")
 
     agent = build_agent(settings, browser_manager)
 
@@ -37,6 +40,7 @@ async def lifespan(app: FastAPI):
     logger.info("Startup complete")
     yield
 
+    cache_clear()
     await http_client.aclose()
     await browser_manager.stop()
     logger.info("Shutdown complete")

@@ -14,9 +14,13 @@ dependencies = [
     { name = "langchain-groq" },
     { name = "langgraph" },
     { name = "lxml" },
-    { name = "playwright" },
     { name = "python-dotenv" },
     { name = "uvicorn" },
+]
+
+[package.optional-dependencies]
+browser = [
+    { name = "playwright" },
 ]
 
 [package.metadata]
@@ -28,10 +32,11 @@ requires-dist = [
     { name = "langchain-groq", specifier = ">=1.1.2" },
     { name = "langgraph", specifier = ">=1.0.7" },
     { name = "lxml", specifier = ">=6.0.2" },
-    { name = "playwright", specifier = ">=1.58.0" },
+    { name = "playwright", marker = "extra == 'browser'", specifier = ">=1.58.0" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
     { name = "uvicorn", specifier = ">=0.40.0" },
 ]
+provides-extras = ["browser"]
 
 [[package]]
 name = "aiohappyeyeballs"

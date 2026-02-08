@@ -74,7 +74,7 @@ You should see output like:
 ```
 2025-01-15 10:00:00 | INFO     | app.main | Settings loaded
 2025-01-15 10:00:01 | INFO     | app.browser | Browser started (headless=True)
-2025-01-15 10:00:01 | INFO     | app.agent | Building agent with 11 tools: fetch_page, parse_html, extract_table_data, extract_metadata, click_element, navigate_browser, previous_webpage, extract_text, extract_hyperlinks, get_elements, current_webpage
+2025-01-15 10:00:01 | INFO     | app.agent | Building agent with 12 tools: scrape, scrape_table, page_info, scrape_json, crawl, navigate_browser, click_element, get_elements, extract_text, extract_hyperlinks, current_webpage, previous_webpage
 2025-01-15 10:00:01 | INFO     | app.main | Startup complete
 INFO:     Uvicorn running on http://127.0.0.1:8000
 ```
@@ -101,9 +101,9 @@ curl -N -H "X-API-Key: my-secret-key-1" \
 You'll see a stream of SSE events:
 
 ```
-data: {"type": "tool_start", "content": "fetch_page"}
+data: {"type": "tool_start", "content": "scrape"}
 
-data: {"type": "tool_end", "content": "fetch_page"}
+data: {"type": "tool_end", "content": "scrape"}
 
 data: {"type": "token", "content": "The"}
 
@@ -140,17 +140,12 @@ Client                        Server                      External
   |                        [4] Agent receives prompt          |
   |                             |                            |
   |                        [5] LLM decides which tool to use |
-  |                             |------- fetch_page -------->| (fast HTTP)
-  |<-- tool_start: fetch_page --|                            |
+  |                             |------- scrape ------------>| (fast HTTP)
+  |<-- tool_start: scrape ------|                            |
   |                             |<------ HTML response ------|
-  |<-- tool_end: fetch_page ----|                            |
+  |<-- tool_end: scrape --------|                            |
   |                             |                            |
-  |                        [6] LLM reads HTML, calls next tool|
-  |                             |------- parse_html -------->| (local, no network)
-  |<-- tool_start: parse_html --|                            |
-  |<-- tool_end: parse_html ----|                            |
-  |                             |                            |
-  |                        [7] LLM formulates answer          |
+  |                        [6] LLM reads result, formulates answer
   |<-- token: "The" ------------|                            |
   |<-- token: " title" ---------|                            |
   |<-- token: " is ..." --------|                            |
@@ -178,9 +173,10 @@ agentic-flagship-api/
     config.py            # Settings class — reads .env into typed Python objects
     security.py          # API key auth, rate limiting, SSRF protection
     routes.py            # HTTP endpoints (/run-mission, /health)
-    agent.py             # Builds the LangGraph ReAct agent with tools + system prompt
-    tools.py             # 4 custom scraping tools (fetch_page, parse_html, etc.)
+    agent.py             # Builds the LangGraph ReAct agent with tools + retry middleware
+    tools.py             # 5 custom scraping tools + URL cache + anti-detection headers
     browser.py           # Playwright browser singleton lifecycle
+    browser_tools.py     # Playwright-based browser tools for JS-rendered pages
     logging.py           # Logging configuration
 ```
 
@@ -196,15 +192,15 @@ When `uvicorn main:app` runs, here's what happens:
 
 2. **`lifespan()`** (async) — Runs after the app is created:
    - Configures structured logging
-   - Starts a **single shared Chromium browser** (Playwright)
-   - Builds the **LangGraph agent** (compiles the graph once)
+   - Starts a **single shared Chromium browser** (Playwright) with a random real-browser User-Agent
+   - Builds the **LangGraph agent** with retry middleware (compiles the graph once)
    - Stores everything on `app.state` for request handlers to access
 
-3. **Shutdown** — When the server stops, the lifespan context manager closes the shared HTTP client and the browser cleanly. No resource leaks.
+3. **Shutdown** — When the server stops, the lifespan context manager clears the URL response cache, closes the shared HTTP client, and stops the browser cleanly. No resource leaks.
 
 ### The Agent
 
-The agent is built with `langgraph.prebuilt.create_react_agent`, which creates a **ReAct loop** (Reasoning + Acting):
+The agent is built with `langchain.agents.create_agent`, which creates a **ReAct loop** (Reasoning + Acting):
 
 ```
           +---------+
@@ -230,14 +226,27 @@ Each loop iteration:
 3. If it calls a tool, the result is added to the conversation and the loop repeats
 4. If it responds directly, the loop ends
 
-The agent has **11 tools** available:
+#### Retry Middleware
+
+The agent uses `ModelRetryMiddleware` to handle malformed tool-call JSON from the LLM (a common failure mode with Groq's Llama models). When the LLM generates invalid JSON:
+
+1. The middleware catches the `GroqAPIError` and retries the **same LLM call** (not the entire agent loop) with exponential backoff
+2. After exhausting retries (default: 2), it returns an error message **to the LLM** instead of crashing, letting the agent try a different approach
+3. Prior tool results are preserved — only the failed LLM call is retried
+
+This reduces agent failure rates significantly without any changes to the request flow.
+
+### Tools
+
+The agent has **12 tools** available:
 
 | Tool | Source | Speed | Use case |
 |------|--------|-------|----------|
-| `fetch_page` | Custom (httpx) | Fast | Fetch raw HTML from any URL |
-| `parse_html` | Custom (BeautifulSoup) | Instant | Extract data with CSS selectors |
-| `extract_table_data` | Custom (BeautifulSoup) | Instant | Convert HTML tables to markdown |
-| `extract_metadata` | Custom (BeautifulSoup) | Instant | Get title, description, OG tags |
+| `scrape` | Custom (httpx + BS4) | Fast | Extract content from any URL using CSS selectors |
+| `scrape_table` | Custom (httpx + BS4) | Fast | Convert HTML tables to markdown |
+| `page_info` | Custom (httpx + BS4) | Fast | Get page metadata (title, description, OG tags, counts) |
+| `scrape_json` | Custom (httpx + BS4) | Fast | Extract structured data (JSON-LD, OpenGraph, meta tags) |
+| `crawl` | Custom (httpx + BS4) | Medium | Follow same-domain links BFS and extract content (1-10 pages) |
 | `navigate_browser` | Playwright | Slow | Load JS-heavy pages |
 | `click_element` | Playwright | Slow | Click buttons/links |
 | `extract_text` | Playwright | Slow | Get visible text from browser |
@@ -248,6 +257,14 @@ The agent has **11 tools** available:
 
 The system prompt teaches the agent to **prefer the fast custom tools** and only fall back to the slower Playwright browser tools when a page requires JavaScript rendering or user interaction (clicking, form filling).
 
+### URL Response Cache
+
+An in-memory TTL cache (5 minutes) prevents redundant fetches. When the agent calls `page_info(url)` and then `scrape(url, selector)` on the same URL, the second call serves HTML from cache instead of making another HTTP request. The cache is cleared on server shutdown.
+
+### Anti-Detection Headers
+
+HTTP requests rotate through 5 real browser User-Agent strings (Chrome, Safari, Firefox on Windows/Mac/Linux) and include standard browser headers (`Accept`, `Accept-Language`, `Connection`). The Playwright browser context also uses a random real User-Agent. This avoids trivial bot detection based on the User-Agent header.
+
 ### SSE Event Protocol
 
 The streaming response uses Server-Sent Events with 5 event types:
@@ -255,8 +272,8 @@ The streaming response uses Server-Sent Events with 5 event types:
 | Event | Meaning | Example payload |
 |-------|---------|-----------------|
 | `token` | A chunk of the LLM's response | `"The title is"` |
-| `tool_start` | Agent started calling a tool | `"fetch_page"` |
-| `tool_end` | Tool finished executing | `"fetch_page"` |
+| `tool_start` | Agent started calling a tool | `"scrape"` |
+| `tool_end` | Tool finished executing | `"scrape"` |
 | `done` | Stream completed successfully | `""` |
 | `error` | Something went wrong | `"Request timed out after 300 seconds."` |
 
@@ -264,7 +281,7 @@ Every SSE line is a JSON object: `{"type": "<event>", "content": "<data>"}`.
 
 A well-behaved client should listen for `done` to know the stream ended cleanly, and handle `error` events for display.
 
-### Error Handling (6 Layers)
+### Error Handling (7 Layers)
 
 Errors are caught at the most appropriate level so they never crash the server:
 
@@ -274,11 +291,12 @@ Errors are caught at the most appropriate level so they never crash the server:
 | **Middleware** | Rate limit exceeded | 429 JSON + `Retry-After` header |
 | **Auth** | Missing or invalid API key | 401 JSON |
 | **Validation** | Empty or oversized prompt | 422 JSON (automatic from FastAPI) |
+| **Retry** | Malformed LLM tool-call JSON (`GroqAPIError`) | Retried automatically (up to `AGENT_MAX_RETRIES` times), then error message sent to LLM |
 | **Stream** | Agent recursion limit, timeout, unexpected errors | SSE `error` event |
 | **Tool** | HTTP errors, parse failures | Error string returned to LLM (it adapts) |
 | **Global** | Anything uncaught | 500 JSON + logged traceback |
 
-Tools **never raise exceptions** — they return error strings so the LLM can see what went wrong and try a different approach (e.g., fall back from `fetch_page` to `navigate_browser`).
+Tools **never raise exceptions** — they return error strings so the LLM can see what went wrong and try a different approach (e.g., fall back from `scrape` to `navigate_browser`).
 
 ---
 
@@ -345,8 +363,10 @@ All configuration is done through environment variables in `.env`. Two values ar
 | `API_KEYS` | **Yes** | — | Comma-separated list of valid API keys for client auth |
 | `GROQ_MODEL` | No | `llama-3.3-70b-versatile` | Groq model identifier |
 | `GROQ_TEMPERATURE` | No | `0.0` | LLM sampling temperature (0 = deterministic) |
+| `GROQ_MAX_TOKENS` | No | `2048` | Max tokens for LLM responses (higher = fewer truncated tool-call JSON errors) |
 | `AGENT_RECURSION_LIMIT` | No | `40` | Max LLM-tool round trips before stopping |
 | `AGENT_REQUEST_TIMEOUT` | No | `300` | Per-request hard timeout in seconds |
+| `AGENT_MAX_RETRIES` | No | `2` | Max retries for failed LLM calls (malformed JSON) before giving up |
 | `BROWSER_HEADLESS` | No | `true` | Run Chromium in headless mode |
 | `CORS_ORIGINS` | No | `*` | Comma-separated allowed CORS origins |
 | `RATE_LIMIT_RPM` | No | `20` | Max requests per minute per API key |
@@ -370,11 +390,11 @@ Stale entries are cleaned up lazily every 100 requests to prevent memory growth.
 
 ### SSRF Protection
 
-The `fetch_page` tool includes Server-Side Request Forgery protection. Before making any HTTP request, it:
+All scraping tools include Server-Side Request Forgery protection. Before making any HTTP request, they:
 
-1. Validates the URL scheme is `http` or `https` (blocks `file://`, `ftp://`, etc.)
-2. Resolves the hostname to an IP address
-3. Checks the IP against blocked private ranges: `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `::1/128`
+1. Validate the URL scheme is `http` or `https` (blocks `file://`, `ftp://`, etc.)
+2. Resolve the hostname to an IP address
+3. Check the IP against blocked private ranges: `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `::1/128`
 
 This prevents the agent from being tricked into fetching internal services.
 
